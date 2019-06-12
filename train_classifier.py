@@ -19,12 +19,15 @@ from torch.distributions import normal
 
 # define options
 def main(dataset="CIFAR10",batch_size=128,resume_epoch=0,
-            adversarial_training=None,
-            sigma_gauss=0.05):
+            adversarial_training="PGDinf",
+            sigma_gauss=0):
 
     epochs=200
-    save_path = "models"
-    save_frequency = 20
+    if adversarial_training is not None:
+        save_path = "models_"+adversarial_training
+    else:
+        save_path = "models_reg"
+    save_frequency = 1
     num_classes = 10
     # Load inputs
     train_loader = load_data(dataset=dataset,datadir="datasets", batch_size=batch_size,train_mode=True)
@@ -48,14 +51,14 @@ def main(dataset="CIFAR10",batch_size=128,resume_epoch=0,
     optimizer = torch.optim.SGD(Classifier.parameters(), lr=0.1, momentum=0.9, weight_decay=5e-4)
     scheduler = get_scheduler(optimizer, policy="multistep",milestones=[60,120,160],gamma=0.2)
 
+
     # resume learning
     if resume_epoch>0:
-        path_to_load = os.path.join(save_path,filename+'_'+dataset,"epoch_"+str(resume_epoch)+'.t7')
+        path_to_load = os.path.join(save_path,modelname+'_'+dataset,"epoch_"+str(resume_epoch)+'.t7')
 
         if os.path.isfile(path_to_load):
             print("=> loading checkpoint '{}'".format(path_to_load))
             checkpoint = torch.load(path_to_load)
-            opt.start_epoch = checkpoint['epoch']
             Classifier = checkpoint['net']
 
             print("=> loaded checkpoint (epoch {})".format(checkpoint['epoch']))
@@ -68,8 +71,8 @@ def main(dataset="CIFAR10",batch_size=128,resume_epoch=0,
                 learning_rate=0.01, binary_search_steps=9, max_iterations=15, abort_early=True,
                  initial_const=0.001, clip_min=0.0, clip_max=1.)
     elif adversarial_training == "PGDinf":
-        attack_linf = attacks.LinfPGDAttack(Classifier,
-             loss_fn=None, eps=0.031, nb_iter=10, eps_iter=0.031/10, 
+        print("-----------PGD inf training----------")
+        attack_linf = attacks.LinfPGDAttack(Classifier,eps=0.031, nb_iter=10, eps_iter=0.031/10, 
              rand_init=True, clip_min=0.0, clip_max=1.0)
     for epoch in range(epochs):
         current_num_input = 0
@@ -77,19 +80,18 @@ def main(dataset="CIFAR10",batch_size=128,resume_epoch=0,
         running_loss = 0.0
         running_acc= 0
 
-        training_loss = 0
-        training_acc = 0
         start_time_epoch = time.time()
         for i, data in enumerate(train_loader, 0):
 
             # get the inputs
             inputs, labels = data
             inputs, labels = inputs.cuda(), labels.cuda()
+            #print(inputs.min(),inputs.max())
             if sigma_gauss>0: 
                 noise = normal.Normal(0,sigma_gauss)
                 inputs += noise.sample(inputs.shape).cuda()
             # zero the parameter gradients
-            optimizer.zero_grad()
+            
 
             # forward + backward + optimize
             if adversarial_training is None:   
@@ -100,6 +102,7 @@ def main(dataset="CIFAR10",batch_size=128,resume_epoch=0,
             elif adversarial_training == "PGDinf":
                 inputs = attack_linf.perturb(inputs,labels)
                 outputs = Classifier(inputs)
+            optimizer.zero_grad()
             loss = criterion(outputs, labels)
             loss.backward()
             optimizer.step()
@@ -110,6 +113,9 @@ def main(dataset="CIFAR10",batch_size=128,resume_epoch=0,
             running_loss += loss.item()
             running_acc += predicted.eq(labels.data).cpu().sum().numpy()
             curr_batch_size = inputs.size(0)
+            
+            if i == 0:
+                 torchvision.utils.save_image(inputs, "images_adv.jpg", nrow=8, padding=2, normalize=False, range=None, scale_each=False, pad_value=0)
 
             if i % 20 == 19:
                 # print every 20 mini-batches
@@ -124,7 +130,7 @@ def main(dataset="CIFAR10",batch_size=128,resume_epoch=0,
         
         # save model
         if (epoch +1) % save_frequency == 0:
-            path_to_save = os.path.join(save_path,filename+'_'+dataset)
+            path_to_save = os.path.join(save_path,modelname+'_'+dataset)
             if not os.path.exists(path_to_save):
                 os.makedirs(path_to_save)
             state={

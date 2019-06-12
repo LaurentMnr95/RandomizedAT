@@ -19,7 +19,7 @@ from torch.distributions import normal
 
 # define options
 def main(dataset="CIFAR10",batch_size=128,resume_epoch=0,
-            adversarial_training="PGDinf",
+            adversarial_training="mixPGDmax",
             sigma_gauss=0):
 
     epochs=200
@@ -70,10 +70,20 @@ def main(dataset="CIFAR10",batch_size=128,resume_epoch=0,
         attack_cw = attacks.CarliniWagnerL2Attack(Classifier, num_classes,
                 learning_rate=0.01, binary_search_steps=9, max_iterations=15, abort_early=True,
                  initial_const=0.001, clip_min=0.0, clip_max=1.)
+    
     elif adversarial_training == "PGDinf":
         print("-----------PGD inf training----------")
         attack_linf = attacks.LinfPGDAttack(Classifier,eps=0.031, nb_iter=10, eps_iter=0.031/10, 
              rand_init=True, clip_min=0.0, clip_max=1.0)
+
+    elif adversarial_training == "mixPGDmax" or adversarial_training == "mixPGDsum":
+        print("-----------mixPGD  training----------")
+        attack_linf = attacks.LinfPGDAttack(Classifier,eps=0.031, nb_iter=10, eps_iter=0.031/10, 
+             rand_init=True, clip_min=0.0, clip_max=1.0) 
+        attack_l2 = attacks.L2PGDAttack(Classifier, eps=5., nb_iter=10, eps_iter=5/10, 
+            rand_init=True, clip_min=0.0, clip_max=1.0)
+    
+
     for epoch in range(epochs):
         current_num_input = 0
 
@@ -96,17 +106,49 @@ def main(dataset="CIFAR10",batch_size=128,resume_epoch=0,
             # forward + backward + optimize
             if adversarial_training is None:   
                 outputs = Classifier(inputs)
-            elif adversarial_training == "CW":
-                inputs = attack_cw.perturb(inputs,labels)
-                outputs = Classifier(inputs)
-            elif adversarial_training == "PGDinf":
-                inputs = attack_linf.perturb(inputs,labels)
-                outputs = Classifier(inputs)
-            optimizer.zero_grad()
-            loss = criterion(outputs, labels)
-            loss.backward()
-            optimizer.step()
+                optimizer.zero_grad()
+                loss = criterion(outputs, labels)
+                loss.backward()
+                optimizer.step()
 
+            elif adversarial_training == "CW":
+                inputs_adv = attack_cw.perturb(inputs,labels)
+                outputs = Classifier(inputs_adv)
+                optimizer.zero_grad()
+                loss = criterion(outputs, labels)
+                loss.backward()
+                optimizer.step()
+
+            elif adversarial_training == "PGDinf":
+                inputs_adv = attack_linf.perturb(inputs,labels)
+                outputs = Classifier(inputs_adv)
+                optimizer.zero_grad()
+                loss = criterion(outputs, labels)
+                loss.backward()
+                optimizer.step()
+
+            elif adversarial_training == "mixPGDsum":
+                inputs_linf = attack_linf.perturb(inputs,labels)
+                inputs_l2 = attack_l2.perturb(inputs,labels)
+                outputs_linf = Classifier(inputs_linf)
+                outputs_l2 = Classifier(inputs_l2)
+                optimizer.zero_grad()
+                loss = criterion(outputs_linf, labels)+criterion(outputs_l2, labels)
+                loss.backward()
+                optimizer.step()
+
+
+            elif adversarial_training == "mixPGDmax":
+                inputs_linf = attack_linf.perturb(inputs,labels)
+                inputs_l2 = attack_l2.perturb(inputs,labels)
+                outputs_linf = Classifier(inputs_linf)
+                outputs_l2 = Classifier(inputs_l2)
+                optimizer.zero_grad()
+                loss = torch.max(criterion(outputs_linf, labels),criterion(outputs_l2, labels))
+                loss.backward()
+                optimizer.step()
+            
+            outputs = Classifier(inputs)  
             _, predicted = torch.max(outputs.data, 1)
 
             # print statistics

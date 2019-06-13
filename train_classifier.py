@@ -18,17 +18,16 @@ from advertorch import attacks
 from torch.distributions import normal
 
 # define options
-def main(dataset="CIFAR10",batch_size=128,resume_epoch=0,
-            adversarial_training="mixPGDmax",
+def main(path_model="model_test/blabla",
+            dataset="CIFAR10",num_classes = 10,
+            epochs=200,batch_size=128,
+            resume_epoch=0, save_frequency=1,
+            adversarial_training=None,
             sigma_gauss=0):
+    if not os.path.exists(path_model):
+            os.makedirs(path_model)
 
-    epochs=200
-    if adversarial_training is not None:
-        save_path = "models_"+adversarial_training
-    else:
-        save_path = "models_reg"
-    save_frequency = 1
-    num_classes = 10
+    
     # Load inputs
     train_loader = load_data(dataset=dataset,datadir="datasets", batch_size=batch_size,train_mode=True)
     num_images = len(train_loader.dataset)
@@ -54,16 +53,13 @@ def main(dataset="CIFAR10",batch_size=128,resume_epoch=0,
 
     # resume learning
     if resume_epoch>0:
-        path_to_load = os.path.join(save_path,modelname+'_'+dataset,"epoch_"+str(resume_epoch)+'.t7')
-
-        if os.path.isfile(path_to_load):
-            print("=> loading checkpoint '{}'".format(path_to_load))
-            checkpoint = torch.load(path_to_load)
+        if os.path.isfile(path_model):
+            print("=> loading checkpoint '{}'".format(path_model))
+            checkpoint = torch.load(path_model)
             Classifier = checkpoint['net']
-
             print("=> loaded checkpoint (epoch {})".format(checkpoint['epoch']))
         else:
-            print("=> no checkpoint found at '{}'".format(path_to_load))
+            print("=> no checkpoint found at '{}'".format(path_model))
 
 
     if adversarial_training == "CW":
@@ -172,14 +168,12 @@ def main(dataset="CIFAR10",batch_size=128,resume_epoch=0,
         
         # save model
         if (epoch +1) % save_frequency == 0:
-            path_to_save = os.path.join(save_path,modelname+'_'+dataset)
-            if not os.path.exists(path_to_save):
-                os.makedirs(path_to_save)
+
             state={
                     'epoch': epoch + 1,
                     'net': Classifier.module,
                     }
-            torch.save(state,os.path.join(path_to_save,"epoch_"+str(epoch+1)+'.t7')) 
+            torch.save(state,os.path.join(path_model,"epoch_"+str(epoch+1)+'.t7')) 
 
         scheduler.step()
 

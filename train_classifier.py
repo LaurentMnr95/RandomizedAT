@@ -1,5 +1,5 @@
 import torch
-#from resnet import *
+import torch.nn.functional as F
 import torchvision.models as models
 import torchvision.transforms as transforms
 import matplotlib.pyplot as plt
@@ -14,20 +14,22 @@ from networks import *
 import sys
 import time
 import copy
-from advertorch import attacks
-from torch.distributions import normal
-
+from advertorch_perso import attacks
+from torch.distributions import normal,laplace
+import random
+##TODO: add EAD, FGM L1
 # define options
 def main(path_model="model_test/blabla",
             dataset="CIFAR10",num_classes = 10,
             epochs=200,batch_size=128,
-            resume_epoch=0, save_frequency=1,
-            adversarial_training=None,
-            sigma_gauss=0):
+            resume_epoch=0, save_frequency=2,
+            adversarial_training="MixRand",attack_list = ["PGDLinf","PGDL2"],
+            eot_samples = 2,
+            noise=None,sigma=0.25):
+
     if not os.path.exists(path_model):
             os.makedirs(path_model)
 
-    
     # Load inputs
     train_loader = load_data(dataset=dataset,datadir="datasets", batch_size=batch_size,train_mode=True)
     num_images = len(train_loader.dataset)
@@ -35,11 +37,13 @@ def main(path_model="model_test/blabla",
 
     # Classifier  definition
     Classifier, modelname = getNetwork(net_type="wide-resnet",depth=28,widen_factor=10,dropout=0.3,num_classes=num_classes)
+    Classifier = RandModel(Classifier, noise=noise, sigma=sigma)
     Classifier.apply(conv_init)
     Classifier.cuda()
     Classifier = torch.nn.DataParallel(Classifier,device_ids=range(torch.cuda.device_count()))
     cudnn.benchmark =True
     print("Classifier intialized")
+    print("available gpus",torch.cuda.device_count())
     print(Classifier)
     Classifier.train()
 
@@ -61,24 +65,18 @@ def main(path_model="model_test/blabla",
         else:
             print("=> no checkpoint found at '{}'".format(path_model))
 
+    adversaries = dict()
 
-    if adversarial_training == "CW":
-        attack_cw = attacks.CarliniWagnerL2Attack(Classifier, num_classes,
+    adversaries["CW"] = attacks.CarliniWagnerL2Attack(Classifier, num_classes,
                 learning_rate=0.01, binary_search_steps=9, max_iterations=15, abort_early=True,
                  initial_const=0.001, clip_min=0.0, clip_max=1.)
-    
-    elif adversarial_training == "PGDinf":
-        print("-----------PGD inf training----------")
-        attack_linf = attacks.LinfPGDAttack(Classifier,eps=0.031, nb_iter=10, eps_iter=0.031/10, 
-             rand_init=True, clip_min=0.0, clip_max=1.0)
-
-    elif adversarial_training == "mixPGDmax" or adversarial_training == "mixPGDsum":
-        print("-----------mixPGD  training----------")
-        attack_linf = attacks.LinfPGDAttack(Classifier,eps=0.031, nb_iter=10, eps_iter=0.031/10, 
-             rand_init=True, clip_min=0.0, clip_max=1.0) 
-        attack_l2 = attacks.L2PGDAttack(Classifier, eps=5., nb_iter=10, eps_iter=5/10, 
-            rand_init=True, clip_min=0.0, clip_max=1.0)
-    
+    adversaries["PGDLinf"] = attacks.LinfPGDAttack(Classifier,eps=0.031, nb_iter=10, eps_iter=2*0.031/10, 
+             rand_init=True, clip_min=0.0, clip_max=1.0,eot_samples=eot_samples)
+    adversaries["PGDL2"] = attacks.L2PGDAttack(Classifier,eps=2., nb_iter=10, eps_iter=2*0.031/10, 
+             rand_init=True, clip_min=0.0, clip_max=1.0,eot_samples=eot_samples)
+    adversaries["FGSM"] = attacks.GradientSignAttack(Classifier, loss_fn=None, eps=0.05, clip_min=0.,
+                 clip_max=1., targeted=False,eot_samples=eot_samples)
+    #TO add L1 attacks
 
     for epoch in range(epochs):
         current_num_input = 0
@@ -92,69 +90,74 @@ def main(path_model="model_test/blabla",
             # get the inputs
             inputs, labels = data
             inputs, labels = inputs.cuda(), labels.cuda()
-            #print(inputs.min(),inputs.max())
-            if sigma_gauss>0: 
-                noise = normal.Normal(0,sigma_gauss)
-                inputs += noise.sample(inputs.shape).cuda()
+            # if noise == "Normal":
+            #     n= normal.Normal(0,sigma)
+            #     inputs += n.sample(inputs.shape).cuda()
+            # if noise == "Laplace":
+            #     n = laplace.Laplace(0,sigma/np.sqrt(2))
+            #     inputs += n.sample(inputs.shape).cuda()
             # zero the parameter gradients
             
 
             # forward + backward + optimize
-            if adversarial_training is None:   
-                outputs = Classifier(inputs)
-                optimizer.zero_grad()
-                loss = criterion(outputs, labels)
-                loss.backward()
-                optimizer.step()
-
-            elif adversarial_training == "CW":
-                inputs_adv = attack_cw.perturb(inputs,labels)
+            if adversarial_training is None:
                 outputs = Classifier(inputs_adv)
                 optimizer.zero_grad()
                 loss = criterion(outputs, labels)
                 loss.backward()
                 optimizer.step()
 
-            elif adversarial_training == "PGDinf":
-                inputs_adv = attack_linf.perturb(inputs,labels)
+            #TO CHANGE AdvTr:
+            if adversarial_training == "Single":
+                inputs_adv = adversaries[attack_list[0]].perturb(inputs,labels)   
                 outputs = Classifier(inputs_adv)
                 optimizer.zero_grad()
                 loss = criterion(outputs, labels)
                 loss.backward()
                 optimizer.step()
 
-            elif adversarial_training == "mixPGDsum":
-                inputs_linf = attack_linf.perturb(inputs,labels)
-                inputs_l2 = attack_l2.perturb(inputs,labels)
-                outputs_linf = Classifier(inputs_linf)
-                outputs_l2 = Classifier(inputs_l2)
-                optimizer.zero_grad()
-                loss = criterion(outputs_linf, labels)+criterion(outputs_l2, labels)
-                loss.backward()
-                optimizer.step()
 
 
-            elif adversarial_training == "mixPGDmax":
-                inputs_linf = attack_linf.perturb(inputs,labels)
-                inputs_l2 = attack_l2.perturb(inputs,labels)
-                outputs_linf = Classifier(inputs_linf)
-                outputs_l2 = Classifier(inputs_l2)
+            elif adversarial_training == "MixSum":
+                loss = 0
+                for att in attack_list:
+                    inputs_adv = adversaries[att].perturb(inputs,labels)
+                    outputs = Classifier(inputs)
+                    loss += criterion(outputs, labels)
                 optimizer.zero_grad()
-                loss = torch.max(criterion(outputs_linf, labels),criterion(outputs_l2, labels))
                 loss.backward()
                 optimizer.step()
             
-            outputs = Classifier(inputs)  
-            _, predicted = torch.max(outputs.data, 1)
+            elif adversarial_training == "MixRand":
+                att = random.choice(attack_list)
+                inputs_adv = adversaries[att].perturb(inputs,labels)
+                outputs = Classifier(inputs)
+                loss = criterion(outputs, labels)
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+            # elif adversarial_training == "MixMax":
+            #     loss = 
+            #     inputs_linf = attack_linf.perturb(inputs,labels)
+            #     inputs_l2 = attack_l2.perturb(inputs,labels)
+            #     outputs_linf = Classifier(inputs_linf)
+            #     outputs_l2 = Classifier(inputs_l2)
+            #     optimizer.zero_grad()
+            #     loss = torch.max(criterion(outputs_linf, labels),criterion(outputs_l2, labels))
+            #     loss.backward()
+            #     optimizer.step()
+
+
+            with torch.no_grad():
+                outputs = Classifier(inputs)  
+                _, predicted = torch.max(outputs.data, 1)
 
             # print statistics
             running_loss += loss.item()
             running_acc += predicted.eq(labels.data).cpu().sum().numpy()
             curr_batch_size = inputs.size(0)
             
-            if i == 0:
-                 torchvision.utils.save_image(inputs, "images_adv.jpg", nrow=8, padding=2, normalize=False, range=None, scale_each=False, pad_value=0)
-
             if i % 20 == 19:
                 # print every 20 mini-batches
                 print("Epoch :[", epoch+1,"/",epochs,

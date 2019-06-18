@@ -11,6 +11,8 @@ from argparse import ArgumentParser
 from utils import *
 from torch.optim import lr_scheduler
 from networks import *
+import torch.nn as nn
+from torch.distributions import normal,laplace
 
 def get_scheduler(optimizer, policy="multistep",milestones=[60,120,160],gamma=0.2):
     """Return a learning rate scheduler
@@ -97,3 +99,39 @@ def load_data(dataset="CIFAR10",datadir="datasets",batch_size=128,train_mode=Tru
                 batch_size=batch_size, shuffle=True)
         print("Loaded MNIST dataset")
     return loader
+
+def one_hot_embedding(labels, num_classes):
+    """Embedding labels to one-hot form.
+
+    Args:
+      labels: (LongTensor) class labels, sized [N,].
+      num_classes: (int) number of classes.
+
+    Returns:
+      (tensor) encoded labels, sized [N, #classes].
+    """
+    y = torch.eye(num_classes) 
+    return y[labels] 
+
+class RandModel(nn.Module):
+    def __init__(self, classifier,num_classes = 10, noise=None,sigma=0.25):
+        super(RandModel, self).__init__()
+        self.classifier = classifier
+        if noise == "Normal":
+            self.noise = normal.Normal(0,sigma)
+            self.sigma = sigma
+        elif noise == "Laplace":
+            self.noise = laplace.sigma(0,sigma/np.sqrt(2))
+            self.sigma = sigma
+        else:
+            self.noise = None
+        
+    def forward(self,x):
+        if self.noise == None:
+            return self.classifier(x)
+        else:
+            if x.is_cuda:
+                return self.classifier(x+self.noise.sample(x.shape).cuda())
+            else:
+                return self.classifier(x+self.noise.sample(x.shape))
+

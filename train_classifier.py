@@ -23,8 +23,8 @@ def main(path_model="model_test/blabla",
             dataset="CIFAR10",num_classes = 10,
             epochs=200,batch_size=128,
             resume_epoch=0, save_frequency=2,
-            adversarial_training="MixRand",attack_list = ["PGDLinf","PGDL2"],
-            eot_samples = 2,
+            adversarial_training="MixMax",attack_list = ["PGDLinf","PGDL2"],
+            eot_samples = 1,
             noise=None,sigma=0.25):
 
     if not os.path.exists(path_model):
@@ -50,7 +50,10 @@ def main(path_model="model_test/blabla",
 
 
     # optimizer and criterion
-    criterion = torch.nn.CrossEntropyLoss()
+    if adversarial_training == "MixMax":
+        criterion =torch.nn.CrossEntropyLoss(reduction="none")
+    else:
+        criterion = torch.nn.CrossEntropyLoss()
     optimizer = torch.optim.SGD(Classifier.parameters(), lr=0.1, momentum=0.9, weight_decay=5e-4)
     scheduler = get_scheduler(optimizer, policy="multistep",milestones=[60,120,160],gamma=0.2)
 
@@ -122,7 +125,7 @@ def main(path_model="model_test/blabla",
                 loss = 0
                 for att in attack_list:
                     inputs_adv = adversaries[att].perturb(inputs,labels)
-                    outputs = Classifier(inputs)
+                    outputs = Classifier(inputs_adv)
                     loss += criterion(outputs, labels)
                 optimizer.zero_grad()
                 loss.backward()
@@ -131,22 +134,23 @@ def main(path_model="model_test/blabla",
             elif adversarial_training == "MixRand":
                 att = random.choice(attack_list)
                 inputs_adv = adversaries[att].perturb(inputs,labels)
-                outputs = Classifier(inputs)
+                outputs = Classifier(inputs_adv)
                 loss = criterion(outputs, labels)
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
 
-            # elif adversarial_training == "MixMax":
-            #     loss = 
-            #     inputs_linf = attack_linf.perturb(inputs,labels)
-            #     inputs_l2 = attack_l2.perturb(inputs,labels)
-            #     outputs_linf = Classifier(inputs_linf)
-            #     outputs_l2 = Classifier(inputs_l2)
-            #     optimizer.zero_grad()
-            #     loss = torch.max(criterion(outputs_linf, labels),criterion(outputs_l2, labels))
-            #     loss.backward()
-            #     optimizer.step()
+            elif adversarial_training == "MixMax":
+                loss = torch.zeros_like(labels).float()
+                for att in attack_list:
+                    inputs_adv = adversaries[att].perturb(inputs,labels)
+                    outputs = Classifier(inputs_adv)
+                    l =criterion(outputs,labels).float()
+                    loss = torch.max(loss,l)
+                loss = loss.mean()
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
 
 
             with torch.no_grad():

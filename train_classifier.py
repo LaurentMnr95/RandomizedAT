@@ -178,7 +178,7 @@ def main(path_model="model_test/blabla",
 
             state={
                     'epoch': epoch + 1,
-                    'net': Classifier.module,
+                    'net': Classifier.classifier.module,
                     }
             torch.save(state,os.path.join(path_model,"epoch_"+str(epoch+1)+'.t7')) 
 

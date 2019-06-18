@@ -14,16 +14,16 @@ from networks import *
 import sys
 import time
 import copy
-from advertorch import attacks
+from advertorch_perso import attacks
 from torch.distributions import normal,laplace
 
-##TODO: add EAD, FGM L1
+##TODO: add L1 attacks + eot CW
 # define options
 def main(path_model="/private/home/laurentmeunier/RAT/models/CIFAR10/models_RT/Normal/epoch_100.t7",
             result_file='blabla.txt',
             dataset="CIFAR10",num_classes = 10,
             batch_size=256,
-            attack="No", batch_eot=1,
+            attack=None, eot_samples=1,
             noise="Normal",
             batch_prediction=3, sigma=0.25):
 
@@ -36,7 +36,8 @@ def main(path_model="/private/home/laurentmeunier/RAT/models/CIFAR10/models_RT/N
     # Classifier  definition
     model_load = torch.load(path_model)
     Classifier = model_load["net"]
-    epoch = model_load ["epoch"]
+    epoch = model_load["epoch"]
+    Classifier = RandModel(Classifier, noise=noise, sigma=sigma)
     Classifier.cuda()
     Classifier = torch.nn.DataParallel(Classifier,device_ids=range(torch.cuda.device_count()))
     cudnn.benchmark =True
@@ -45,24 +46,18 @@ def main(path_model="/private/home/laurentmeunier/RAT/models/CIFAR10/models_RT/N
     Classifier.eval()
 
 
-    # if adversarial_training == "CW":
-    #     attack_cw = attacks.CarliniWagnerL2Attack(Classifier, num_classes,
-    #             learning_rate=0.01, binary_search_steps=9, max_iterations=15, abort_early=True,
-    #              initial_const=0.001, clip_min=0.0, clip_max=1.)
-    
-    # elif adversarial_training == "PGDinf":
-    #     print("-----------PGD inf training----------")
-    #     attack_linf = attacks.LinfPGDAttack(Classifier,eps=0.031, nb_iter=10, eps_iter=0.031/10, 
-    #          rand_init=True, clip_min=0.0, clip_max=1.0)
+    adversaries = dict()
 
-    # elif adversarial_training == "mixPGDmax" or adversarial_training == "mixPGDsum":
-    #     print("-----------mixPGD  training----------")
-    #     attack_linf = attacks.LinfPGDAttack(Classifier,eps=0.031, nb_iter=10, eps_iter=0.031/10, 
-    #          rand_init=True, clip_min=0.0, clip_max=1.0) 
-    #     attack_l2 = attacks.L2PGDAttack(Classifier, eps=5., nb_iter=10, eps_iter=2*5./10, 
-    #         rand_init=True, clip_min=0.0, clip_max=1.0)
-    
-
+    adversaries["CW"] = attacks.CarliniWagnerL2Attack(Classifier, num_classes,
+                learning_rate=0.01, binary_search_steps=9, max_iterations=15, abort_early=True,
+                 initial_const=0.001, clip_min=0.0, clip_max=1.)
+    adversaries["PGDLinf"] = attacks.LinfPGDAttack(Classifier,eps=0.031, nb_iter=10, eps_iter=2*0.031/10, 
+             rand_init=True, clip_min=0.0, clip_max=1.0,eot_samples=eot_samples)
+    adversaries["PGDL2"] = attacks.L2PGDAttack(Classifier,eps=2., nb_iter=10, eps_iter=2*0.031/10, 
+             rand_init=True, clip_min=0.0, clip_max=1.0,eot_samples=eot_samples)
+    adversaries["FGSM"] = attacks.GradientSignAttack(Classifier, loss_fn=None, eps=0.05, clip_min=0.,
+                 clip_max=1., targeted=False,eot_samples=eot_samples)
+    #TO add L1 attacks
 
     current_num_input = 0
     running_acc= 0
@@ -74,14 +69,8 @@ def main(path_model="/private/home/laurentmeunier/RAT/models/CIFAR10/models_RT/N
         inputs, labels = data
         inputs, labels = inputs.cuda(), labels.cuda()
 
-
-        if attack == "CW":
-            inputs = attack_cw.perturb(inputs,labels)
-
-        elif attack == "PGDinf":
-            inputs = attack_linf.perturb(inputs,labels)
-
-
+        if attack is not None:
+            inputs = adversaries[attack].perturb(inputs,labels)
 
         with torch.no_grad():
             if noise is None:
@@ -89,16 +78,11 @@ def main(path_model="/private/home/laurentmeunier/RAT/models/CIFAR10/models_RT/N
                 _, predicted = torch.max(outputs.data, 1)
 
             else:
-                if noise == "Normal":
-                    noise = normal.Normal(0,sigma)
-                if noise == "Laplace":
-                    noise = laplace.Laplace(0,sigma/np.sqrt(2))
-
-                outputs = 0
+                outputs = torch.FloatTensor(labels.shape[0],num_classes).cuda()
+                outputs.zero_()
                 for _ in range(batch_prediction):
-                    inputs_rand = inputs+noise.sample(inputs.shape).cuda()
-                    outputs += Classifier(inputs_rand)
-                    _, predicted = torch.max(outputs.data, 1)
+                    outputs += Classifier(inputs)
+                _, predicted = torch.max(outputs.data, 1)
 
 
         # print statistics
@@ -112,7 +96,7 @@ def main(path_model="/private/home/laurentmeunier/RAT/models/CIFAR10/models_RT/N
     accuracy = (running_acc/num_images)
     print(accuracy)
     with open(result_file, 'a') as f:
-        f.write('{} {} {} {} {}\n'.format(epoch, batch_prediction, attack, batch_eot, accuracy))
+        f.write('{} {} {} {} {}\n'.format(epoch, batch_prediction, attack, eot_samples, accuracy))
     
         
 

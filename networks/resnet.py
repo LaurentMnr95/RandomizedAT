@@ -5,9 +5,9 @@ from torch.autograd import Variable
 import sys
 
 
-
 def conv3x3(in_planes, out_planes, stride=1):
     return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride, padding=1, bias=True)
+
 
 def conv_init(m):
     classname = m.__class__.__name__
@@ -15,18 +15,20 @@ def conv_init(m):
         init.xavier_uniform_(m.weight, gain=np.sqrt(2))
         init.constant_(m.bias, 0)
 
+
 def cfg(depth):
     depth_lst = [18, 34, 50, 101, 152]
     assert (depth in depth_lst), "Error : Resnet depth should be either 18, 34, 50, 101, 152"
     cf_dict = {
-        '18': (BasicBlock, [2,2,2,2]),
-        '34': (BasicBlock, [3,4,6,3]),
-        '50': (Bottleneck, [3,4,6,3]),
-        '101':(Bottleneck, [3,4,23,3]),
-        '152':(Bottleneck, [3,8,36,3]),
+        '18': (BasicBlock, [2, 2, 2, 2]),
+        '34': (BasicBlock, [3, 4, 6, 3]),
+        '50': (Bottleneck, [3, 4, 6, 3]),
+        '101': (Bottleneck, [3, 4, 23, 3]),
+        '152': (Bottleneck, [3, 8, 36, 3]),
     }
 
     return cf_dict[str(depth)]
+
 
 class BasicBlock(nn.Module):
     expansion = 1
@@ -52,6 +54,7 @@ class BasicBlock(nn.Module):
         out = F.relu(out)
 
         return out
+
 
 class Bottleneck(nn.Module):
     expansion = 4
@@ -81,14 +84,15 @@ class Bottleneck(nn.Module):
 
         return out
 
+
 class ResNet(nn.Module):
-    def __init__(self, depth, num_classes,s):
+    def __init__(self, depth, num_classes, s):
         super(ResNet, self).__init__()
         self.in_planes = 16
 
         block, num_blocks = cfg(depth)
 
-        self.conv1 = conv3x3(3,16)
+        self.conv1 = conv3x3(3, 16)
         self.bn1 = nn.BatchNorm2d(16)
         self.layer1 = self._make_layer(block, 16, num_blocks[0], stride=1)
         self.layer2 = self._make_layer(block, 32, num_blocks[1], stride=2)
@@ -117,7 +121,8 @@ class ResNet(nn.Module):
 
         return out
 
+
 if __name__ == '__main__':
-    net=ResNet(50, 10)
-    y = net(Variable(torch.randn(1,3,32,32)))
+    net = ResNet(50, 10)
+    y = net(Variable(torch.randn(1, 3, 32, 32)))
     print(y.size())

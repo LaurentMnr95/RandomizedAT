@@ -2,11 +2,13 @@ import torch
 import torch.nn as nn
 from torch.autograd import Variable
 
+
 def conv_init(m):
     classname = m.__class__.__name__
     if classname.find('Conv') != -1:
         init.xavier_uniform_(m.weight, gain=np.sqrt(2))
         init.constant_(m.bias, 0)
+
 
 def cfg(depth):
     depth_lst = [11, 13, 16, 19]
@@ -24,27 +26,29 @@ def cfg(depth):
             256, 256, 'mp',
             512, 512, 'mp',
             512, 512, 'mp'
-            ],
+        ],
         '16': [
             64, 64, 'mp',
             128, 128, 'mp',
             256, 256, 256, 'mp',
             512, 512, 512, 'mp',
             512, 512, 512, 'mp'
-            ],
+        ],
         '19': [
             64, 64, 'mp',
             128, 128, 'mp',
             256, 256, 256, 256, 'mp',
             512, 512, 512, 512, 'mp',
             512, 512, 512, 512, 'mp'
-            ],
+        ],
     }
 
     return cf_dict[str(depth)]
 
+
 def conv3x3(in_planes, out_planes, stride=1):
     return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride, padding=1, bias=True)
+
 
 class VGG(nn.Module):
     def __init__(self, depth, num_classes):
@@ -74,7 +78,8 @@ class VGG(nn.Module):
         layers += [nn.AvgPool2d(kernel_size=1, stride=1)]
         return nn.Sequential(*layers)
 
+
 if __name__ == "__main__":
     net = VGG(16, 10)
-    y = net(Variable(torch.randn(1,3,32,32)))
+    y = net(Variable(torch.randn(1, 3, 32, 32)))
     print(y.size())

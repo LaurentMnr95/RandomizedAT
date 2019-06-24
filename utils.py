@@ -1,5 +1,5 @@
 import torch
-#from resnet import *
+# from resnet import *
 import torchvision
 import torchvision.transforms as transforms
 import matplotlib.pyplot as plt
@@ -58,6 +58,9 @@ def getNetwork(net_type="wide-resnet", depth=28, widen_factor=10, dropout=0.3, n
     elif (net_type == 'wide-resnet'):
         net = Wide_ResNet(depth, widen_factor, dropout, num_classes)
         file_name = 'wide-resnet-'+str(depth)+'x'+str(widen_factor)
+    elif (net_type == 'inceptionresnetv2'):
+        net = InceptionResNetV2(num_classes)
+        file_name = 'inceptionresnetv2'
     else:
         print(
             'Error : Network should be either [LeNet / VGGNet / ResNet / Wide_ResNet')
@@ -108,21 +111,33 @@ def load_data(dataset="CIFAR10", datadir="datasets", batch_size=128, train_mode=
                 datadir, dataset), train=train_mode, download=True, transform=transform),
             batch_size=batch_size, shuffle=True)
         print("Loaded MNIST dataset")
+    elif dataset == "ImageNet":
+        if train_mode:
+            transform = transforms.Compose([transforms.Resize(299),
+                                            transforms.CenterCrop(299),
+                                            # transforms.RandomResizedCrop(299),
+                                            # transforms.RandomHorizontalFlip(),
+                                            transforms.ToTensor()])
+            loader = torch.utils.data.DataLoader(
+                torchvision.datasets.ImageFolder(os.path.join(datadir, "train"),
+                                                 transform),
+                batch_size=batch_size,
+                shuffle=True,
+                num_workers=8,
+                pin_memory=True)
+        else:
+            transform = transforms.Compose([transforms.Resize(299),
+                                            transforms.CenterCrop(299),
+                                            transforms.ToTensor()])
+            loader = torch.utils.data.DataLoader(
+                torchvision.datasets.ImageFolder(os.path.join(datadir, "val"),
+                                                 transform),
+                batch_size=batch_size,
+                shuffle=True,
+                num_workers=8,
+                pin_memory=True)
+        print("Loaded ImageNet dataset")
     return loader
-
-
-def one_hot_embedding(labels, num_classes):
-    """Embedding labels to one-hot form.
-
-    Args:
-      labels: (LongTensor) class labels, sized [N,].
-      num_classes: (int) number of classes.
-
-    Returns:
-      (tensor) encoded labels, sized [N, #classes].
-    """
-    y = torch.eye(num_classes)
-    return y[labels]
 
 
 class RandModel(nn.Module):
@@ -146,3 +161,12 @@ class RandModel(nn.Module):
                 return self.classifier(x+self.noise.sample(x.shape).cuda())
             else:
                 return self.classifier(x+self.noise.sample(x.shape))
+
+
+def delete_line(file, name):
+    with open(file, "r") as f:
+        lines = f.readlines()
+    with open(file, "w") as f:
+        for line in lines:
+            if name not in line.strip("\n"):
+                f.write(line)

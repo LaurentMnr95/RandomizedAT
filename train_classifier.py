@@ -14,7 +14,7 @@ from networks import *
 import sys
 import time
 import copy
-from advertorch_perso import attacks
+from advertorch import attacks
 from torch.distributions import normal, laplace
 import random
 # TODO: add EAD, FGM L1
@@ -22,8 +22,8 @@ import random
 
 
 def main(path_model="model_test/blabla",
-         dataset="CIFAR10", num_classes=10,
-         epochs=200, batch_size=128,
+         dataset='ImageNet', num_classes=1000,
+         epochs=200, batch_size=64,
          resume_epoch=0, save_frequency=2,
          adversarial_training=None, attack_list=["PGDLinf", "PGDL2"],
          eot_samples=1,
@@ -33,22 +33,32 @@ def main(path_model="model_test/blabla",
         os.makedirs(path_model)
 
     # Load inputs
-    train_loader = load_data(dataset=dataset, datadir="datasets",
-                             batch_size=batch_size, train_mode=True)
+    if dataset == "ImageNet":
+        train_loader = load_data(dataset=dataset,
+                                 datadir="/datasets01_101/imagenet_full_size/061417/",  # to adapt
+                                 batch_size=batch_size, train_mode=True)
+    else:
+        train_loader = load_data(dataset=dataset, datadir="datasets",
+                                 batch_size=batch_size, train_mode=True)
+
     num_images = len(train_loader.dataset)
 
     # Classifier  definition
-    Classifier, modelname = getNetwork(net_type="wide-resnet", depth=28, widen_factor=10,
-                                       dropout=0.3, num_classes=num_classes)
+    if dataset == "ImageNet":
+        Classifier, modelname = getNetwork(net_type='inceptionresnetv2', num_classes=num_classes)
+    else:
+        Classifier, modelname = getNetwork(net_type="wide-resnet", depth=28, widen_factor=10,
+                                           dropout=0.3, num_classes=num_classes)
+        Classifier.apply(conv_init)
+
     Classifier = RandModel(Classifier, noise=noise, sigma=sigma)
-    Classifier.apply(conv_init)
     Classifier.cuda()
     Classifier = torch.nn.DataParallel(
         Classifier, device_ids=range(torch.cuda.device_count()))
     cudnn.benchmark = True
-    print("Classifier intialized")
-    print("available gpus", torch.cuda.device_count())
-    print(Classifier)
+    print("Classifier intialized on:")
+    for i in range(torch.cuda.device_count()):
+        print(torch.cuda.get_device_name(i))
     Classifier.train()
 
     # optimizer and criterion
@@ -78,10 +88,24 @@ def main(path_model="model_test/blabla",
                                                       learning_rate=0.01, binary_search_steps=9,
                                                       max_iterations=15, abort_early=True,
                                                       initial_const=0.001, clip_min=0.0, clip_max=1.)
+
+    adversaries["EAD"] = attacks.ElasticNetL1Attack(Classifier, num_classes,
+                                                    confidence=0,
+                                                    targeted=False, learning_rate=0.01,
+                                                    binary_search_steps=9, max_iterations=60,
+                                                    abort_early=True, initial_const=1e-3,
+                                                    clip_min=0., clip_max=1., beta=1e-3, decision_rule='EN')
+
+    adversaries["PGDL1"] = attacks.SparseL1PGDAttack(Classifier, eps=10., nb_iter=10, eps_iter=2*10./10,
+                                                     rand_init=False, clip_min=0.0, clip_max=1.0,
+                                                     sparsity=0.05, eot_samples=eot_samples)
+
     adversaries["PGDLinf"] = attacks.LinfPGDAttack(Classifier, eps=0.031, nb_iter=10, eps_iter=2*0.031/10,
                                                    rand_init=True, clip_min=0.0, clip_max=1.0, eot_samples=eot_samples)
-    adversaries["PGDL2"] = attacks.L2PGDAttack(Classifier, eps=2., nb_iter=10, eps_iter=2*0.031/10,
+
+    adversaries["PGDL2"] = attacks.L2PGDAttack(Classifier, eps=2., nb_iter=10, eps_iter=2*2./10,
                                                rand_init=True, clip_min=0.0, clip_max=1.0, eot_samples=eot_samples)
+
     adversaries["FGSM"] = attacks.GradientSignAttack(Classifier, loss_fn=None, eps=0.05, clip_min=0.,
                                                      clip_max=1., targeted=False, eot_samples=eot_samples)
     # TO add L1 attacks
@@ -114,12 +138,13 @@ def main(path_model="model_test/blabla",
                 loss.backward()
                 optimizer.step()
 
-            elif adversarial_training == "MixSum":
+            elif adversarial_training == "MixMean":
                 loss = 0
                 for att in attack_list:
                     inputs_adv = adversaries[att].perturb(inputs, labels)
                     outputs = Classifier(inputs_adv)
                     loss += criterion(outputs, labels)
+                loss /= len(attack_list)
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
@@ -153,7 +178,7 @@ def main(path_model="model_test/blabla",
             running_acc += predicted.eq(labels.data).cpu().sum().numpy()
             curr_batch_size = inputs.size(0)
 
-            if i % 20 == 19:
+            if i % 5 == 4:
                 print("Epoch :[", epoch+1, "/", epochs,
                       "] [", i*batch_size, "/", num_images,
                       "] Running loss:", running_loss/20,

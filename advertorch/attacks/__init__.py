@@ -19,6 +19,7 @@ from .iterative_projected_gradient import FastFeatureAttack
 from .iterative_projected_gradient import L2BasicIterativeAttack
 from .iterative_projected_gradient import LinfBasicIterativeAttack
 from .iterative_projected_gradient import PGDAttack
+from .iterative_projected_gradient import SparseL1PGDAttack
 from .iterative_projected_gradient import LinfPGDAttack
 from .iterative_projected_gradient import L2PGDAttack
 from .iterative_projected_gradient import MomentumIterativeAttack
@@ -26,6 +27,8 @@ from .iterative_projected_gradient import L2MomentumIterativeAttack
 from .iterative_projected_gradient import LinfMomentumIterativeAttack
 
 from .carlini_wagner import CarliniWagnerL2Attack
+
+from .ead import ElasticNetL1Attack
 
 from .lbfgs import LBFGSAttack
 

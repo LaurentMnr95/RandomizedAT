@@ -1,8 +1,9 @@
 import submitit
 from test_classifier import main
 import os
+from utils import delete_line
 
-attacks = [None, "CW", "PGDLinf", "PGDL2"]
+attacks = [None, "CW", "EAD", "PGDLinf", "PGDL2", "PGDL1"]
 #################################################################### Baseline models #####################################################################################
 datasets = [("CIFAR10", 10), ("CIFAR100", 100)]
 # TODO add rm result file
@@ -27,14 +28,13 @@ for d in datasets:
         result_file = "attacks.txt"
         path_results = os.path.join(path_results, result_file)
 
-        if os.path.exists(path_results):
-            os.remove(path_results)
+        delete_line(path_results, a)
 
         # submission interface (logs are dumped in the folder)
         executor = submitit.AutoExecutor(folder=path_logs)  # "uninterrupted")  # timeout in min
         executor.update_parameters(
             gpus_per_node=2, timeout_min=4320, partition="dev")
-        job = executor.sumbit(main, path_model=os.path.join(path_models, "BEST.t7"),
+        job = executor.submit(main, path_model=os.path.join(path_models, "BEST.t7"),
                               result_file=path_results,
                               dataset=d[0], num_classes=d[1],
                               batch_size=256,
@@ -116,13 +116,12 @@ for d in datasets:
 
             result_file = "attacks.txt"
             path_results = os.path.join(path_results, result_file)
-            if os.path.exists(path_results):
-                os.remove(path_results)
+            delete_line(path_results, a)
             # submission interface (logs are dumped in the folder)
             executor = submitit.AutoExecutor(folder=path_logs)  # "uninterrupted")  # timeout in min
             executor.update_parameters(
                 gpus_per_node=2, timeout_min=4320, partition="dev")
-            job = executor.sumbit(main, path_model=os.path.join(path_models, "BEST.t7"),
+            job = executor.submit(main, path_model=os.path.join(path_models, "BEST.t7"),
                                   result_file=path_results,
                                   dataset=d[0], num_classes=d[1],
                                   batch_size=256,

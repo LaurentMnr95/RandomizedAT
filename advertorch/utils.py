@@ -52,6 +52,11 @@ def calc_l2distsq(x, y):
     return d.view(d.shape[0], -1).sum(dim=1)
 
 
+def calc_l1dist(x, y):
+    d = torch.abs(x - y)
+    return d.view(d.shape[0], -1).sum(dim=1)
+
+
 def tanh_rescale(x, x_min=-1., x_max=1.):
     return (torch.tanh(x)) * 0.5 * (x_max - x_min) + (x_max + x_min) * 0.5
 
@@ -149,6 +154,59 @@ def batch_clamp(float_or_vector, tensor):
     else:
         raise TypeError("Value has to be float or torch.Tensor")
     return tensor
+
+
+def soft_thresh(lamda, x):
+    abs_input = torch.abs(x)
+    sign = x.sign()
+
+    mag = abs_input - lamda
+    mag = (torch.abs(mag) + mag) / 2
+
+    return mag * sign
+
+
+def soft_thresh(lamda, x):
+    abs_input = torch.abs(x)
+    sign = x.sign()
+
+    mag = abs_input - lamda
+    mag = (torch.abs(mag) + mag) / 2
+
+    return mag * sign
+
+
+def batch_l1_proj_flat(x, eps=1):
+    d = torch.abs(x)
+    d = d.view(d.shape[0], -1).sum(dim=1)
+    indexes_b = torch.nonzero(d > eps+1e-3).view(-1)
+    x_b = x[indexes_b]
+    batch_size_b = x_b.size(0)
+    if batch_size_b == 0:
+        return x
+
+    view = x_b.view(batch_size_b, -1)
+    view_size = view.size(1)
+    u = view.abs()
+    s = u.sort(1, descending=True)[0]
+    if x.is_cuda:
+        vv = torch.arange(view_size).float().cuda()
+    else:
+        vv = torch.arange(view_size).float()
+    st = (s.cumsum(1)-eps)/(vv+1)
+    idx = ((s-st) > 0).max(1)[1]
+    proj_x_b = soft_thresh(st.gather(1, idx.unsqueeze(1)), x_b)
+    proj_x = x
+
+    proj_x[indexes_b] = proj_x_b
+    return proj_x
+
+
+def batch_l1_proj(x, eps):
+    batch_size = x.size(0)
+    view = x.view(batch_size, -1)
+    proj_flat = batch_l1_proj_flat(view, eps)
+    return proj_flat.view_as(x)
 
 
 def _get_norm_batch(x, p):

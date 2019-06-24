@@ -59,7 +59,7 @@ class CarliniWagnerL2Attack(Attack, LabelMixin):
                  targeted=False, learning_rate=0.01,
                  binary_search_steps=9, max_iterations=10000,
                  abort_early=True, initial_const=1e-3,
-                 clip_min=0., clip_max=1., loss_fn=None):
+                 clip_min=0., clip_max=1., loss_fn=None, eot_samples=1):
         """Carlini Wagner L2 Attack implementation in pytorch."""
         if loss_fn is not None:
             import warnings
@@ -84,6 +84,7 @@ class CarliniWagnerL2Attack(Attack, LabelMixin):
         # The last iteration (if we run many steps) repeat the search once.
         self.repeat = binary_search_steps >= REPEAT_STEP
         self.targeted = targeted
+        self.eot_samples = eot_samples
 
     def _loss_fn(self, output, y_onehot, l2distsq, const):
         # TODO: move this out of the class and make this the default loss_fn
@@ -122,21 +123,23 @@ class CarliniWagnerL2Attack(Attack, LabelMixin):
 
         return is_successful(pred, label, self.targeted)
 
-
     def _forward_and_update_delta(
             self, optimizer, x_atanh, delta, y_onehot, loss_coeffs):
 
         optimizer.zero_grad()
         adv = tanh_rescale(delta + x_atanh, self.clip_min, self.clip_max)
         transimgs_rescale = tanh_rescale(x_atanh, self.clip_min, self.clip_max)
-        output = self.predict(adv)
+
+        output = 0
+        for i in range(self.eot_samples):
+            output += self.predict(adv)
+        output /= self.eot_samples
         l2distsq = calc_l2distsq(adv, transimgs_rescale)
         loss = self._loss_fn(output, y_onehot, l2distsq, loss_coeffs)
         loss.backward()
         optimizer.step()
 
         return loss.item(), l2distsq.data, output.data, adv.data
-
 
     def _get_arctanh_x(self, x):
         result = clamp((x - self.clip_min) / (self.clip_max - self.clip_min),
@@ -187,7 +190,6 @@ class CarliniWagnerL2Attack(Attack, LabelMixin):
                         coeff_lower_bound[ii] + coeff_upper_bound[ii]) / 2
                 else:
                     loss_coeffs[ii] *= 10
-
 
     def perturb(self, x, y=None):
         x, y = self._verify_and_process_inputs(x, y)

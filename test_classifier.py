@@ -14,23 +14,25 @@ from networks import *
 import sys
 import time
 import copy
-from advertorch_perso import attacks
+from advertorch import attacks
 from torch.distributions import normal, laplace
 
 # TODO: add L1 attacks + eot CW
 # define options
 
 
-def main(path_model="/private/home/laurentmeunier/RAT/models/CIFAR10/models_RT/Normal/epoch_100.t7",
+def main(path_model="/private/home/laurentmeunier/RAT/models/CIFAR10/baseline/epoch_68.t7",
          result_file='blabla.txt',
+         attacks_norm="norm.txt",
          dataset="CIFAR10", num_classes=10,
          batch_size=256,
-         attack=None, eot_samples=1,  # 80
-         noise="Normal",
-         batch_prediction=3, sigma=0.25):
+         attack="PGDL2", eot_samples=1,  # 80
+         noise=None,
+         batch_prediction=1, sigma=0.25, save_image=False):
 
     if noise is None:
         batch_prediction = None
+        sigma = None
     # Load inputs
     test_loader = load_data(dataset=dataset, datadir="datasets",
                             batch_size=batch_size, train_mode=False)
@@ -42,11 +44,13 @@ def main(path_model="/private/home/laurentmeunier/RAT/models/CIFAR10/models_RT/N
     epoch = model_load["epoch"]
     Classifier = RandModel(Classifier, noise=noise, sigma=sigma)
     Classifier.cuda()
-    Classifier = torch.nn.DataParallel(
-        Classifier, device_ids=range(torch.cuda.device_count()))
+    Classifier = torch.nn.DataParallel(Classifier, device_ids=range(torch.cuda.device_count()))
+
     cudnn.benchmark = True
     print("Classifier intialized")
-    print(Classifier)
+    for i in range(torch.cuda.device_count()):
+        print(torch.cuda.get_device_name(i))
+    # print(Classifier)
     Classifier.eval()
 
     adversaries = dict()
@@ -55,13 +59,26 @@ def main(path_model="/private/home/laurentmeunier/RAT/models/CIFAR10/models_RT/N
                                                       learning_rate=0.01, binary_search_steps=9,
                                                       max_iterations=60, abort_early=True,
                                                       initial_const=0.001, clip_min=0.0, clip_max=1.)
+
+    adversaries["EAD"] = attacks.ElasticNetL1Attack(Classifier, num_classes,
+                                                    confidence=0,
+                                                    targeted=False, learning_rate=0.01,
+                                                    binary_search_steps=9, max_iterations=60,
+                                                    abort_early=True, initial_const=1e-3,
+                                                    clip_min=0., clip_max=1., beta=1e-3, decision_rule='EN')
+
+    adversaries["PGDL1"] = attacks.SparseL1PGDAttack(Classifier, eps=10., nb_iter=40, eps_iter=2*10/40,
+                                                     rand_init=False, clip_min=0.0, clip_max=1.0,
+                                                     sparsity=0.05, eot_samples=eot_samples)
+
     adversaries["PGDLinf"] = attacks.LinfPGDAttack(Classifier, eps=0.031, nb_iter=40, eps_iter=2*0.031/40,
                                                    rand_init=True, clip_min=0.0, clip_max=1.0, eot_samples=eot_samples)
-    adversaries["PGDL2"] = attacks.L2PGDAttack(Classifier, eps=2., nb_iter=40, eps_iter=2*0.031/40,
+
+    adversaries["PGDL2"] = attacks.L2PGDAttack(Classifier, eps=2., nb_iter=40, eps_iter=2*2./40,
                                                rand_init=True, clip_min=0.0, clip_max=1.0, eot_samples=eot_samples)
+
     adversaries["FGSM"] = attacks.GradientSignAttack(Classifier, loss_fn=None, eps=0.05, clip_min=0.,
                                                      clip_max=1., targeted=False, eot_samples=eot_samples)
-    # TO add L1 attacks
 
     current_num_input = 0
     running_acc = 0
@@ -72,10 +89,15 @@ def main(path_model="/private/home/laurentmeunier/RAT/models/CIFAR10/models_RT/N
         # get the inputs
         inputs, labels = data
         inputs, labels = inputs.cuda(), labels.cuda()
-
+        if (i == 0) and save_image:
+            torchvision.utils.save_image(inputs, "images_nat.jpg", nrow=8, padding=2,
+                                         normalize=False, range=None, scale_each=False, pad_value=0)
         if attack is not None:
             inputs = adversaries[attack].perturb(inputs, labels)
 
+        if (i == 0) and save_image:
+            torchvision.utils.save_image(inputs, "images_adv.jpg", nrow=8, padding=2,
+                                         normalize=False, range=None, scale_each=False, pad_value=0)
         with torch.no_grad():
             if noise is None:
                 outputs = Classifier(inputs)
@@ -92,10 +114,8 @@ def main(path_model="/private/home/laurentmeunier/RAT/models/CIFAR10/models_RT/N
         # print statistics
         running_acc += predicted.eq(labels.data).cpu().sum().numpy()
         curr_batch_size = inputs.size(0)
-
-        if i % 20 == 19:
-            # print every 20 mini-batches
-            print("[", i*batch_size, "/", num_images, "]")
+        current_num_input += curr_batch_size
+        print("[", (i+1)*batch_size, "/", num_images, "] running_acc=", running_acc/current_num_input)
 
     accuracy = (running_acc/num_images)
     print(accuracy)
@@ -105,4 +125,4 @@ def main(path_model="/private/home/laurentmeunier/RAT/models/CIFAR10/models_RT/N
 
 
 if __name__ == "__main__":
-    main()
+    main(save_image=True)

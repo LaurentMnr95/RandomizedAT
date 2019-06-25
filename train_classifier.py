@@ -17,6 +17,7 @@ import copy
 from advertorch import attacks
 from torch.distributions import normal, laplace
 import random
+import submitit
 # TODO: add EAD, FGM L1
 # define options
 
@@ -29,13 +30,22 @@ def main(path_model="model_test/blabla",
          eot_samples=1,
          noise=None, sigma=0.25):
 
+    job_env = submitit.JobEnvironment()
+    torch.cuda.set_device(job_env.local_rank)
+    torch.distributed.init_process_group(
+        backend="nccl",
+        init_method=TOOOOOOOOOOO,
+        world_size=job_env.num_tasks,
+        rank=job_env.global_rank,
+    )
+    print(f"Process group: {job_env.num_tasks} tasks, rank: {job_env.global_rank}")
     if not os.path.exists(path_model):
         os.makedirs(path_model)
 
     # Load inputs
     if dataset == "ImageNet":
         train_loader = load_data(dataset=dataset,
-                                 datadir="/datasets01_101/imagenet_full_size/061417/",  # to adapt
+                                 datadir="datasets",  # "/datasets01_101/imagenet_full_size/061417/",  # to adapt
                                  batch_size=batch_size, train_mode=True)
     else:
         train_loader = load_data(dataset=dataset, datadir="datasets",
@@ -45,7 +55,9 @@ def main(path_model="model_test/blabla",
 
     # Classifier  definition
     if dataset == "ImageNet":
-        Classifier, modelname = getNetwork(net_type='inceptionresnetv2', num_classes=num_classes)
+        Classifier = models.densenet161(pretrained=False)
+
+        # Classifier, modelname = getNetwork(net_type='inceptionresnetv2', num_classes=num_classes)
     else:
         Classifier, modelname = getNetwork(net_type="wide-resnet", depth=28, widen_factor=10,
                                            dropout=0.3, num_classes=num_classes)
@@ -63,13 +75,18 @@ def main(path_model="model_test/blabla",
 
     # optimizer and criterion
     if adversarial_training == "MixMax":
-        criterion = torch.nn.CrossEntropyLoss(reduction="none")
+        criterion = torch.nn.CrossEntropyLoss(reduction="none").cuda()
     else:
-        criterion = torch.nn.CrossEntropyLoss()
+        criterion = torch.nn.CrossEntropyLoss().cuda()
     optimizer = torch.optim.SGD(
         Classifier.parameters(), lr=0.1, momentum=0.9, weight_decay=5e-4)
-    scheduler = get_scheduler(optimizer, policy="multistep", milestones=[
-                              60, 120, 160], gamma=0.2)
+
+    if dataset == "ImageNet":
+        scheduler = get_scheduler(optimizer, policy="multistep", milestones=[
+            60, 120, 160], gamma=0.2)
+    else:
+        scheduler = get_scheduler(optimizer, policy="multistep", milestones=[
+            30, 60, 90], gamma=0.2)
 
     # resume learning
     if resume_epoch > 0:

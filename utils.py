@@ -69,7 +69,7 @@ def getNetwork(net_type="wide-resnet", depth=28, widen_factor=10, dropout=0.3, n
     return net, file_name
 
 
-def load_data(dataset="CIFAR10", datadir="datasets", batch_size=128, train_mode=True):
+def load_data(dataset="CIFAR10", datadir="datasets", job_env, batch_size_per_gpu=128, train_mode=True):
     # TODO:add Imagenet
     if dataset == "CIFAR100":
         if train_mode == True:
@@ -82,10 +82,16 @@ def load_data(dataset="CIFAR10", datadir="datasets", batch_size=128, train_mode=
             transform = transforms.Compose([
                 transforms.ToTensor(),
             ])
-        loader = torch.utils.data.DataLoader(
-            torchvision.datasets.CIFAR100(os.path.join(
-                datadir, dataset), train=train_mode, download=True, transform=transform),
-            batch_size=batch_size, shuffle=True)
+
+        dataset = torchvision.datasets.CIFAR100(os.path.join(
+            datadir, dataset), train=train_mode, download=True, transform=transform)
+
+        sampler = torch.utils.data.distributed.DistributedSampler(
+            dataset, num_replicas=job_env.num_tasks, rank=job_env.global_rank)
+
+        loader = torch.utils.data.DataLoader(dataset, num_workers=4,
+                                             batch_size=batch_size_per_gpu,
+                                             shuffle=True, sampler=sampler)
         print("Loaded CIFAR 100 dataset")
 
     if dataset == "CIFAR10":
@@ -99,17 +105,33 @@ def load_data(dataset="CIFAR10", datadir="datasets", batch_size=128, train_mode=
             transform = transforms.Compose([
                 transforms.ToTensor(),
             ])
-        loader = torch.utils.data.DataLoader(
-            torchvision.datasets.CIFAR10(os.path.join(
-                datadir, dataset), train=train_mode, download=True, transform=transform),
-            batch_size=batch_size, shuffle=True)
+        dataset = torchvision.datasets.CIFAR10(os.path.join(
+            datadir, dataset), train=train_mode, download=True, transform=transform)
+
+        sampler = torch.utils.data.distributed.DistributedSampler(
+            dataset, num_replicas=job_env.num_tasks, rank=job_env.global_rank)
+
+        loader = torch.utils.data.DataLoader(dataset, num_workers=4,
+                                             batch_size=batch_size_per_gpu,
+                                             shuffle=True, sampler=sampler)
         print("Loaded CIFAR 10 dataset")
 
     elif dataset == "MNIST":
-        loader = torch.utils.data.DataLoader(
-            torchvision.datasets.MNIST(os.path.join(
-                datadir, dataset), train=train_mode, download=True, transform=transform),
-            batch_size=batch_size, shuffle=True)
+        transform = transforms.Compose([
+            transforms.ToTensor(),
+        ])
+
+        dataset = torchvision.datasets.CIFAR100(os.path.join(
+            datadir, dataset), train=train_mode, download=True, transform=transform)
+
+        sampler = torch.utils.data.distributed.DistributedSampler(
+            dataset, num_replicas=job_env.num_tasks, rank=job_env.global_rank)
+
+        loader = torch.utils.data.DataLoader(dataset, num_workers=4,
+                                             batch_size=batch_size_per_gpu,
+                                             shuffle=True, sampler=sampler)
+        print("Loaded CIFAR 100 dataset")
+
         print("Loaded MNIST dataset")
     elif dataset == "ImageNet":
         if train_mode:
@@ -121,7 +143,7 @@ def load_data(dataset="CIFAR10", datadir="datasets", batch_size=128, train_mode=
             loader = torch.utils.data.DataLoader(
                 torchvision.datasets.ImageFolder(os.path.join(datadir, "train"),
                                                  transform),
-                batch_size=batch_size,
+                batch_size=batch_size_per_gpu,
                 shuffle=True,
                 num_workers=8,
                 pin_memory=True)
@@ -132,7 +154,7 @@ def load_data(dataset="CIFAR10", datadir="datasets", batch_size=128, train_mode=
             loader = torch.utils.data.DataLoader(
                 torchvision.datasets.ImageFolder(os.path.join(datadir, "val"),
                                                  transform),
-                batch_size=batch_size,
+                batch_size=batch_size_per_gpu,
                 shuffle=True,
                 num_workers=8,
                 pin_memory=True)

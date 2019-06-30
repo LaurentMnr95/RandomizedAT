@@ -13,6 +13,19 @@ from torch.optim import lr_scheduler
 from networks import *
 import torch.nn as nn
 from torch.distributions import normal, laplace
+from pathlib import Path
+import uuid
+from dataset_folder import *
+from collections import defaultdict, deque
+import datetime
+import pickle
+import time
+
+import torch
+import torch.distributed as dist
+
+import errno
+import os
 
 
 def get_scheduler(optimizer, policy="multistep", milestones=[60, 120, 160], gamma=0.2):
@@ -69,7 +82,7 @@ def getNetwork(net_type="wide-resnet", depth=28, widen_factor=10, dropout=0.3, n
     return net, file_name
 
 
-def load_data(dataset="CIFAR10", datadir="datasets", job_env, batch_size_per_gpu=128, train_mode=True):
+def load_data(job_env=None, dataset="CIFAR10", datadir="datasets",  batch_size_per_gpu=128, train_mode=True):
     # TODO:add Imagenet
     if dataset == "CIFAR100":
         if train_mode == True:
@@ -91,7 +104,7 @@ def load_data(dataset="CIFAR10", datadir="datasets", job_env, batch_size_per_gpu
 
         loader = torch.utils.data.DataLoader(dataset, num_workers=4,
                                              batch_size=batch_size_per_gpu,
-                                             shuffle=True, sampler=sampler)
+                                             sampler=sampler)
         print("Loaded CIFAR 100 dataset")
 
     if dataset == "CIFAR10":
@@ -113,7 +126,7 @@ def load_data(dataset="CIFAR10", datadir="datasets", job_env, batch_size_per_gpu
 
         loader = torch.utils.data.DataLoader(dataset, num_workers=4,
                                              batch_size=batch_size_per_gpu,
-                                             shuffle=True, sampler=sampler)
+                                             sampler=sampler)
         print("Loaded CIFAR 10 dataset")
 
     elif dataset == "MNIST":
@@ -129,9 +142,7 @@ def load_data(dataset="CIFAR10", datadir="datasets", job_env, batch_size_per_gpu
 
         loader = torch.utils.data.DataLoader(dataset, num_workers=4,
                                              batch_size=batch_size_per_gpu,
-                                             shuffle=True, sampler=sampler)
-        print("Loaded CIFAR 100 dataset")
-
+                                             sampler=sampler)
         print("Loaded MNIST dataset")
     elif dataset == "ImageNet":
         if train_mode:
@@ -140,26 +151,42 @@ def load_data(dataset="CIFAR10", datadir="datasets", job_env, batch_size_per_gpu
                                             # transforms.RandomResizedCrop(299),
                                             # transforms.RandomHorizontalFlip(),
                                             transforms.ToTensor()])
-            loader = torch.utils.data.DataLoader(
-                torchvision.datasets.ImageFolder(os.path.join(datadir, "train"),
-                                                 transform),
-                batch_size=batch_size_per_gpu,
-                shuffle=True,
-                num_workers=8,
-                pin_memory=True)
+            split = "train"
         else:
             transform = transforms.Compose([transforms.Resize(299),
                                             transforms.CenterCrop(299),
                                             transforms.ToTensor()])
-            loader = torch.utils.data.DataLoader(
-                torchvision.datasets.ImageFolder(os.path.join(datadir, "val"),
-                                                 transform),
-                batch_size=batch_size_per_gpu,
-                shuffle=True,
-                num_workers=8,
-                pin_memory=True)
+            split = "val"
+
+        dataset = ImageFolder_perso(os.path.join(datadir, split),
+                                    transform)
+        sampler = torch.utils.data.distributed.DistributedSampler(
+            dataset, num_replicas=job_env.num_tasks, rank=job_env.global_rank)
+
+        loader = torch.utils.data.DataLoader(dataset,
+                                             sampler=sampler,
+                                             batch_size=batch_size_per_gpu,
+                                             num_workers=10*job_env.num_tasks,
+                                             pin_memory=True)
         print("Loaded ImageNet dataset")
     return loader
+
+
+def get_shared_folder() -> Path:
+    if Path("/checkpoint/").is_dir():
+        return Path("/checkpoint/laurentmeunier/trainers")
+    if Path("/mnt/vol/gfsai-east").is_dir():
+        return Path("/mnt/vol/gfsai-east/ai-group/users/laurentmeunier/trainers")
+    raise RuntimeError("No shared folder available")
+
+
+def get_init_file() -> Path:
+    # Init file must not exist, but it's parent dir must exist.
+    os.makedirs(str(get_shared_folder()), exist_ok=True)
+    init_file = get_shared_folder() / f"{uuid.uuid4().hex}_init"
+    if init_file.exists():
+        os.remove(str(init_file))
+    return init_file
 
 
 class RandModel(nn.Module):
@@ -185,10 +212,82 @@ class RandModel(nn.Module):
                 return self.classifier(x+self.noise.sample(x.shape))
 
 
-def delete_line(file, name):
+def get_lp_norm(x, p=2):
+    d = torch.abs(x)
+    if p == np.inf:
+        d, _ = d.view(d.shape[0], -1).max(dim=1)
+        return d
+    else:
+        d = d**p
+        d = (d.view(d.shape[0], -1).sum(dim=1))
+        return d**(1./p)
+
+
+def delete_line(file, names):
     with open(file, "r") as f:
         lines = f.readlines()
     with open(file, "w") as f:
         for line in lines:
-            if name not in line.strip("\n"):
+            write_line = True
+            for n in names:
+                if n in line.strip("\n"):
+                    write_line = False
+            if write_line:
                 f.write(line)
+
+
+def is_dist_avail_and_initialized():
+    if not dist.is_available():
+        return False
+    if not dist.is_initialized():
+        return False
+    return True
+
+
+def get_world_size():
+    if not is_dist_avail_and_initialized():
+        return 1
+    return dist.get_world_size()
+
+
+def all_gather(data):
+    """
+    Run all_gather on arbitrary picklable data (not necessarily tensors)
+    Args:
+        data: any picklable object
+    Returns:
+        list[data]: list of data gathered from each rank
+    """
+    world_size = get_world_size()
+    if world_size == 1:
+        return [data]
+
+    # serialized to a Tensor
+    buffer = pickle.dumps(data)
+    storage = torch.ByteStorage.from_buffer(buffer)
+    tensor = torch.ByteTensor(storage).to("cuda")
+
+    # obtain Tensor size of each rank
+    local_size = torch.tensor([tensor.numel()], device="cuda")
+    size_list = [torch.tensor([0], device="cuda") for _ in range(world_size)]
+    dist.all_gather(size_list, local_size)
+    size_list = [int(size.item()) for size in size_list]
+    max_size = max(size_list)
+
+    # receiving Tensor from all ranks
+    # we pad the tensor because torch all_gather does not support
+    # gathering tensors of different shapes
+    tensor_list = []
+    for _ in size_list:
+        tensor_list.append(torch.empty((max_size,), dtype=torch.uint8, device="cuda"))
+    if local_size != max_size:
+        padding = torch.empty(size=(max_size - local_size,), dtype=torch.uint8, device="cuda")
+        tensor = torch.cat((tensor, padding), dim=0)
+    dist.all_gather(tensor_list, tensor)
+
+    data_list = []
+    for size, tensor in zip(size_list, tensor_list):
+        buffer = tensor.cpu().numpy().tobytes()[:size]
+        data_list.append(pickle.loads(buffer))
+
+    return data_list

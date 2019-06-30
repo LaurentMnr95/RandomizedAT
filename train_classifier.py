@@ -22,7 +22,7 @@ import submitit
 # define options
 
 
-def main(path_model="model_test/blabla",
+def main(init_file, path_model="model_test/blabla",
          dataset='ImageNet', num_classes=1000,
          epochs=200, batch_size=64,
          resume_epoch=0, save_frequency=2,
@@ -30,58 +30,64 @@ def main(path_model="model_test/blabla",
          eot_samples=1,
          noise=None, sigma=0.25):
 
+    torch.manual_seed(1234)
+
     job_env = submitit.JobEnvironment()
+    print(job_env)
     torch.cuda.set_device(job_env.local_rank)
+
     torch.distributed.init_process_group(
         backend="nccl",
-        init_method=TOOOOOOOOOOO,
+        init_method=init_file,
         world_size=job_env.num_tasks,
         rank=job_env.global_rank,
     )
+
     print(f"Process group: {job_env.num_tasks} tasks, rank: {job_env.global_rank}")
+
     if not os.path.exists(path_model):
         os.makedirs(path_model)
 
     # Load inputs
     if dataset == "ImageNet":
         train_loader = load_data(dataset=dataset,
-                                 datadir="datasets",  # "/datasets01_101/imagenet_full_size/061417/",  # to adapt
-                                 batch_size=batch_size, train_mode=True)
+                                 datadir="/datasets01_101/imagenet_full_size/061417/",  # to adapt
+                                 batch_size_per_gpu=int(batch_size/job_env.num_tasks),
+                                 job_env=job_env, train_mode=True)
     else:
         train_loader = load_data(dataset=dataset, datadir="datasets",
-                                 batch_size=batch_size, train_mode=True)
+                                 batch_size_per_gpu=int(batch_size/job_env.num_tasks),
+                                 job_env=job_env, train_mode=True)
 
     num_images = len(train_loader.dataset)
-
     # Classifier  definition
     if dataset == "ImageNet":
-        Classifier = models.densenet161(pretrained=False)
+        # Classifier = models.resnet18(pretrained=False)
 
-        # Classifier, modelname = getNetwork(net_type='inceptionresnetv2', num_classes=num_classes)
+        Classifier, modelname = getNetwork(net_type='inceptionresnetv2', num_classes=num_classes)
     else:
         Classifier, modelname = getNetwork(net_type="wide-resnet", depth=28, widen_factor=10,
                                            dropout=0.3, num_classes=num_classes)
         Classifier.apply(conv_init)
 
     Classifier = RandModel(Classifier, noise=noise, sigma=sigma)
-    Classifier.cuda()
-    Classifier = torch.nn.DataParallel(
-        Classifier, device_ids=range(torch.cuda.device_count()))
-    cudnn.benchmark = True
-    print("Classifier intialized on:")
-    for i in range(torch.cuda.device_count()):
-        print(torch.cuda.get_device_name(i))
-    Classifier.train()
+    Classifier.cuda(job_env.local_rank)
 
+    cudnn.benchmark = True
+    Classifier = torch.nn.parallel.DistributedDataParallel(
+        Classifier, device_ids=[job_env.local_rank], output_device=job_env.local_rank)
+    Classifier.train()
+    print("Classifier initialized")
     # optimizer and criterion
     if adversarial_training == "MixMax":
-        criterion = torch.nn.CrossEntropyLoss(reduction="none").cuda()
+        criterion = torch.nn.CrossEntropyLoss(reduction="none").cuda(job_env.local_rank)
     else:
-        criterion = torch.nn.CrossEntropyLoss().cuda()
-    optimizer = torch.optim.SGD(
-        Classifier.parameters(), lr=0.1, momentum=0.9, weight_decay=5e-4)
+        criterion = torch.nn.CrossEntropyLoss().cuda(job_env.local_rank)
 
-    if dataset == "ImageNet":
+    optimizer = torch.optim.SGD(
+        Classifier.parameters(), lr=0.1*batch_size/256, momentum=0.9, weight_decay=5e-4)
+
+    if dataset != "ImageNet":
         scheduler = get_scheduler(optimizer, policy="multistep", milestones=[
             60, 120, 160], gamma=0.2)
     else:
@@ -137,7 +143,7 @@ def main(path_model="model_test/blabla",
         for i, data in enumerate(train_loader, 0):
 
             inputs, labels = data
-            inputs, labels = inputs.cuda(), labels.cuda()
+            inputs, labels = inputs.cuda(job_env.local_rank), labels.cuda(job_env.local_rank)
 
             if adversarial_training is None:
                 outputs = Classifier(inputs)
@@ -195,20 +201,20 @@ def main(path_model="model_test/blabla",
             running_acc += predicted.eq(labels.data).cpu().sum().numpy()
             curr_batch_size = inputs.size(0)
 
-            if i % 5 == 4:
-                print("Epoch :[", epoch+1, "/", epochs,
-                      "] [", i*batch_size, "/", num_images,
-                      "] Running loss:", running_loss/20,
-                      ", Running accuracy:", running_acc/(20*curr_batch_size), " time:", time.time()-start_time_epoch)
-                running_loss = 0.0
-                running_acc = 0
+            if i % 5 == 4
+            print("Epoch :[", epoch+1, "/", epochs,
+                  "] [", i*batch_size, "/", num_images,
+                  "] Running loss:", running_loss/5,
+                  ", Running accuracy:", running_acc/(5*curr_batch_size), " time:", time.time()-start_time_epoch)
+            running_loss = 0.0
+            running_acc = 0
 
         # save model
-        if (epoch + 1) % save_frequency == 0:
+        if ((epoch + 1) % save_frequency == 0) and (job_env.global_rank == 0):
 
             state = {
                 'epoch': epoch + 1,
-                'net': Classifier.module.classifier,
+                'model_state_dict': Classifier.state_dict(),
             }
             torch.save(state, os.path.join(
                 path_model, "epoch_"+str(epoch+1)+'.t7'))
